@@ -823,6 +823,68 @@ describe('ChatInput file mentions', () => {
     })
   })
 
+  it('preserves explicit permission mode when replacing an empty session for branch launch', async () => {
+    mocks.create.mockResolvedValueOnce({ sessionId: 'created-permission', workDir: '/repo' })
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'Project',
+        createdAt: '2026-05-01T00:00:00.000Z',
+        modifiedAt: '2026-05-01T00:00:00.000Z',
+        messageCount: 0,
+        projectPath: '/repo',
+        workDir: '/repo',
+        workDirExists: true,
+        permissionMode: 'acceptEdits',
+      }],
+      activeSessionId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          messages: [],
+          chatState: 'idle',
+          connectionState: 'connected',
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          streamingResponseChars: 0,
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          agentTaskNotifications: {},
+          elapsedTimer: null,
+        },
+      },
+    })
+
+    render(<ChatInput variant="hero" />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /Select branch: main/ }))
+    fireEvent.click(await screen.findByRole('option', { name: /feature\/a/ }))
+    const input = screen.getByRole('textbox') as HTMLTextAreaElement
+    fireEvent.change(input, { target: { value: 'run with preserved permissions', selectionStart: 30 } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    await waitFor(() => {
+      expect(mocks.create).toHaveBeenCalledWith({
+        workDir: '/repo',
+        repository: { branch: 'feature/a', worktree: false },
+        permissionMode: 'acceptEdits',
+      })
+    })
+    expect(mocks.wsSend).toHaveBeenCalledWith('created-permission', {
+      type: 'user_message',
+      content: 'run with preserved permissions',
+      attachments: [],
+    })
+  })
+
   it('starts an empty active session on the selected branch inside an isolated worktree', async () => {
     mocks.create.mockResolvedValueOnce({
       sessionId: 'created-worktree',

@@ -699,6 +699,197 @@ describe('ConversationService', () => {
     }
   })
 
+  it('should prefer the persisted runtime model when provider responses use aliased model names', async () => {
+    const previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    const previousNodeEnv = process.env.NODE_ENV
+    const previousModelContextWindows = process.env.CLAUDE_CODE_MODEL_CONTEXT_WINDOWS
+    const tmpConfigDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-transcript-runtime-model-'))
+    const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-workdir-runtime-model-'))
+    process.env.CLAUDE_CONFIG_DIR = tmpConfigDir
+    process.env.NODE_ENV = 'development'
+    delete process.env.CLAUDE_CODE_MODEL_CONTEXT_WINDOWS
+
+    try {
+      const providerService = new ProviderService()
+      const provider = await providerService.addProvider({
+        presetId: 'custom',
+        name: 'Aliased Runtime Provider',
+        apiKey: 'provider-key',
+        authStrategy: 'auth_token',
+        baseUrl: 'https://api.example.com/anthropic',
+        apiFormat: 'anthropic',
+        models: {
+          main: 'provider-main',
+          haiku: 'provider-fast',
+          sonnet: 'provider-sonnet',
+          opus: 'provider-opus',
+        },
+        modelContextWindows: {
+          'provider-main': 200_000,
+          'provider-fast': 64_000,
+        },
+      })
+      await providerService.activateProvider(provider.id)
+
+      const svc = new SessionService()
+      const { sessionId } = await svc.createSession(workDir)
+      await svc.appendSessionMetadata(sessionId, {
+        workDir,
+        runtimeProviderId: provider.id,
+        runtimeModelId: 'provider-fast',
+      })
+      const found = await svc.findSessionFile(sessionId)
+      expect(found).not.toBeNull()
+
+      await fs.appendFile(found!.filePath, JSON.stringify({
+        type: 'assistant',
+        uuid: crypto.randomUUID(),
+        timestamp: '2026-06-15T12:00:00.000Z',
+        cwd: workDir,
+        version: '999.0.0-test',
+        message: {
+          role: 'assistant',
+          model: 'provider-returned-fast-alias',
+          content: [{ type: 'text', text: 'hello' }],
+          usage: {
+            input_tokens: 100,
+            output_tokens: 20,
+          },
+        },
+      }) + '\n')
+
+      const contextEstimate = await svc.getTranscriptContextEstimate(sessionId)
+      const usage = await svc.getTranscriptUsage(sessionId)
+
+      expect(contextEstimate?.model).toBe('provider-returned-fast-alias')
+      expect(contextEstimate?.rawMaxTokens).toBe(64_000)
+      expect(usage?.models[0]?.contextWindow).toBe(64_000)
+    } finally {
+      if (previousConfigDir === undefined) {
+        delete process.env.CLAUDE_CONFIG_DIR
+      } else {
+        process.env.CLAUDE_CONFIG_DIR = previousConfigDir
+      }
+      if (previousNodeEnv === undefined) {
+        delete process.env.NODE_ENV
+      } else {
+        process.env.NODE_ENV = previousNodeEnv
+      }
+      if (previousModelContextWindows === undefined) {
+        delete process.env.CLAUDE_CODE_MODEL_CONTEXT_WINDOWS
+      } else {
+        process.env.CLAUDE_CODE_MODEL_CONTEXT_WINDOWS = previousModelContextWindows
+      }
+      await fs.rm(tmpConfigDir, { recursive: true, force: true })
+      await fs.rm(workDir, { recursive: true, force: true })
+    }
+  })
+
+  it('should keep transcript usage context windows tied to runtime metadata order', async () => {
+    const previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    const previousNodeEnv = process.env.NODE_ENV
+    const previousModelContextWindows = process.env.CLAUDE_CODE_MODEL_CONTEXT_WINDOWS
+    const tmpConfigDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-transcript-runtime-switch-'))
+    const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-workdir-runtime-switch-'))
+    process.env.CLAUDE_CONFIG_DIR = tmpConfigDir
+    process.env.NODE_ENV = 'development'
+    delete process.env.CLAUDE_CODE_MODEL_CONTEXT_WINDOWS
+
+    try {
+      const providerService = new ProviderService()
+      const provider = await providerService.addProvider({
+        presetId: 'custom',
+        name: 'Runtime Switch Provider',
+        apiKey: 'provider-key',
+        authStrategy: 'auth_token',
+        baseUrl: 'https://api.example.com/anthropic',
+        apiFormat: 'anthropic',
+        models: {
+          main: 'provider-big',
+          haiku: 'provider-fast',
+          sonnet: 'provider-big',
+          opus: 'provider-big',
+        },
+        modelContextWindows: {
+          'provider-big': 1_000_000,
+          'provider-fast': 64_000,
+        },
+      })
+      await providerService.activateProvider(provider.id)
+
+      const svc = new SessionService()
+      const { sessionId, workDir: sessionWorkDir } = await svc.createSession(workDir)
+      await svc.appendSessionMetadata(sessionId, {
+        workDir: sessionWorkDir,
+        runtimeProviderId: provider.id,
+        runtimeModelId: 'provider-fast',
+      })
+      const found = await svc.findSessionFile(sessionId)
+      expect(found).not.toBeNull()
+      await fs.appendFile(found!.filePath, JSON.stringify({
+        type: 'assistant',
+        uuid: crypto.randomUUID(),
+        timestamp: '2026-06-15T12:00:00.000Z',
+        cwd: sessionWorkDir,
+        version: '999.0.0-test',
+        message: {
+          role: 'assistant',
+          model: 'provider-returned-fast-alias',
+          content: [{ type: 'text', text: 'fast' }],
+          usage: {
+            input_tokens: 100,
+            output_tokens: 20,
+          },
+        },
+      }) + '\n')
+      await svc.appendSessionMetadata(sessionId, {
+        workDir: sessionWorkDir,
+        runtimeProviderId: provider.id,
+        runtimeModelId: 'provider-big',
+      })
+      await fs.appendFile(found!.filePath, JSON.stringify({
+        type: 'assistant',
+        uuid: crypto.randomUUID(),
+        timestamp: '2026-06-15T12:01:00.000Z',
+        cwd: sessionWorkDir,
+        version: '999.0.0-test',
+        message: {
+          role: 'assistant',
+          model: 'provider-returned-big-alias',
+          content: [{ type: 'text', text: 'big' }],
+          usage: {
+            input_tokens: 100,
+            output_tokens: 20,
+          },
+        },
+      }) + '\n')
+
+      const usage = await svc.getTranscriptUsage(sessionId)
+      const windows = new Map(usage?.models.map((model) => [model.model, model.contextWindow]))
+
+      expect(windows.get('provider-returned-fast-alias')).toBe(64_000)
+      expect(windows.get('provider-returned-big-alias')).toBe(1_000_000)
+    } finally {
+      if (previousConfigDir === undefined) {
+        delete process.env.CLAUDE_CONFIG_DIR
+      } else {
+        process.env.CLAUDE_CONFIG_DIR = previousConfigDir
+      }
+      if (previousNodeEnv === undefined) {
+        delete process.env.NODE_ENV
+      } else {
+        process.env.NODE_ENV = previousNodeEnv
+      }
+      if (previousModelContextWindows === undefined) {
+        delete process.env.CLAUDE_CODE_MODEL_CONTEXT_WINDOWS
+      } else {
+        process.env.CLAUDE_CODE_MODEL_CONTEXT_WINDOWS = previousModelContextWindows
+      }
+      await fs.rm(tmpConfigDir, { recursive: true, force: true })
+      await fs.rm(workDir, { recursive: true, force: true })
+    }
+  })
+
   it('should infer a unique saved provider context window for sessions missing runtime metadata', async () => {
     const previousConfigDir = process.env.CLAUDE_CONFIG_DIR
     const previousNodeEnv = process.env.NODE_ENV
@@ -773,6 +964,83 @@ describe('ConversationService', () => {
 
       expect(contextEstimate?.model).toBe('mimo-v2.5-pro')
       expect(contextEstimate?.rawMaxTokens).toBe(1_000_000)
+    } finally {
+      if (previousConfigDir === undefined) {
+        delete process.env.CLAUDE_CONFIG_DIR
+      } else {
+        process.env.CLAUDE_CONFIG_DIR = previousConfigDir
+      }
+      if (previousNodeEnv === undefined) {
+        delete process.env.NODE_ENV
+      } else {
+        process.env.NODE_ENV = previousNodeEnv
+      }
+      if (previousModelContextWindows === undefined) {
+        delete process.env.CLAUDE_CODE_MODEL_CONTEXT_WINDOWS
+      } else {
+        process.env.CLAUDE_CODE_MODEL_CONTEXT_WINDOWS = previousModelContextWindows
+      }
+      await fs.rm(tmpConfigDir, { recursive: true, force: true })
+      await fs.rm(workDir, { recursive: true, force: true })
+    }
+  })
+
+  it('should not infer saved provider context windows for unrelated response model names', async () => {
+    const previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    const previousNodeEnv = process.env.NODE_ENV
+    const previousModelContextWindows = process.env.CLAUDE_CODE_MODEL_CONTEXT_WINDOWS
+    const tmpConfigDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-transcript-provider-unrelated-'))
+    const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-workdir-provider-unrelated-'))
+    process.env.CLAUDE_CONFIG_DIR = tmpConfigDir
+    process.env.NODE_ENV = 'development'
+    delete process.env.CLAUDE_CODE_MODEL_CONTEXT_WINDOWS
+
+    try {
+      const providerService = new ProviderService()
+      await providerService.addProvider({
+        presetId: 'custom',
+        name: 'Only Saved Provider',
+        apiKey: 'provider-key',
+        authStrategy: 'auth_token',
+        baseUrl: 'https://api.example.com/anthropic',
+        apiFormat: 'anthropic',
+        models: {
+          main: 'configured-provider-main',
+          haiku: 'configured-provider-main',
+          sonnet: 'configured-provider-main',
+          opus: 'configured-provider-main',
+        },
+        modelContextWindows: {
+          'configured-provider-main': 1_000_000,
+        },
+      })
+
+      const svc = new SessionService()
+      const { sessionId } = await svc.createSession(workDir)
+      const found = await svc.findSessionFile(sessionId)
+      expect(found).not.toBeNull()
+
+      await fs.appendFile(found!.filePath, JSON.stringify({
+        type: 'assistant',
+        uuid: crypto.randomUUID(),
+        timestamp: '2026-06-15T12:00:00.000Z',
+        cwd: workDir,
+        version: '999.0.0-test',
+        message: {
+          role: 'assistant',
+          model: 'unrelated-response-model',
+          content: [{ type: 'text', text: 'hello' }],
+          usage: {
+            input_tokens: 100,
+            output_tokens: 20,
+          },
+        },
+      }) + '\n')
+
+      const contextEstimate = await svc.getTranscriptContextEstimate(sessionId)
+
+      expect(contextEstimate?.model).toBe('unrelated-response-model')
+      expect(contextEstimate?.rawMaxTokens).toBe(200_000)
     } finally {
       if (previousConfigDir === undefined) {
         delete process.env.CLAUDE_CONFIG_DIR
@@ -1978,7 +2246,7 @@ describe('WebSocket Chat Integration', () => {
     const createRes = await fetch(`${baseUrl}/api/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workDir: process.cwd() }),
+      body: JSON.stringify({ workDir: process.cwd(), permissionMode: 'acceptEdits' }),
     })
     expect(createRes.status).toBe(201)
     const { sessionId } = await createRes.json() as { sessionId: string }
@@ -1998,6 +2266,35 @@ describe('WebSocket Chat Integration', () => {
     expect(messagesRes.status).toBe(200)
     const body = await messagesRes.json() as { messages: unknown[] }
     expect(body.messages).toEqual([])
+
+    const inspectionRes = await fetch(`${baseUrl}/api/sessions/${sessionId}/inspection?includeContext=0`)
+    expect(inspectionRes.status).toBe(200)
+    const inspection = await inspectionRes.json() as { status?: { permissionMode?: string } }
+    expect(inspection.status?.permissionMode).toBe('acceptEdits')
+  })
+
+  it('should preserve permission mode when clearing an inactive desktop session', async () => {
+    const createRes = await fetch(`${baseUrl}/api/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workDir: process.cwd(), permissionMode: 'acceptEdits' }),
+    })
+    expect(createRes.status).toBe(201)
+    const { sessionId } = await createRes.json() as { sessionId: string }
+    expect(conversationService.hasSession(sessionId)).toBe(false)
+
+    const clearTurn = await runTurn(sessionId, '/clear')
+    expect(
+      clearTurn.some(
+        (m) => m.type === 'system_notification' && m.subtype === 'session_cleared',
+      ),
+    ).toBe(true)
+    expect(clearTurn.some((m) => m.type === 'content_delta')).toBe(false)
+
+    const inspectionRes = await fetch(`${baseUrl}/api/sessions/${sessionId}/inspection?includeContext=0`)
+    expect(inspectionRes.status).toBe(200)
+    const inspection = await inspectionRes.json() as { status?: { permissionMode?: string } }
+    expect(inspection.status?.permissionMode).toBe('acceptEdits')
   })
 
   it('should reject /clear arguments without clearing the desktop session', async () => {

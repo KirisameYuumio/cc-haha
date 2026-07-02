@@ -269,13 +269,15 @@ async function getSessionMessages(sessionId: string): Promise<Response> {
 }
 
 async function getSessionTrace(sessionId: string): Promise<Response> {
-  const [trace, sessionMeta] = await Promise.all([
+  const [trace, sessionMeta, messageSignature] = await Promise.all([
     traceCaptureService.getSessionTrace(sessionId),
     getSessionTraceMeta(sessionId),
+    sessionService.getSessionMessagesSignature(sessionId),
   ])
   return Response.json({
     ...trace,
     calls: trace.calls.map((call) => trimTraceCallPreviews(call)),
+    messageSignature,
     session: sessionMeta
       ? {
           id: sessionId,
@@ -455,6 +457,7 @@ async function deleteSession(sessionId: string): Promise<Response> {
   }
   closeSessionConnection(sessionId, 'session deleted')
   cleanupAdapterSessionMappings(sessionId)
+  recentProjectsCache = null
   return Response.json({ ok: true })
 }
 
@@ -477,6 +480,9 @@ async function batchDeleteSessions(req: Request): Promise<Response> {
   for (const sessionId of result.successes) {
     closeSessionConnection(sessionId, 'session deleted')
     cleanupAdapterSessionMappings(sessionId)
+  }
+  if (result.successes.length > 0) {
+    recentProjectsCache = null
   }
 
   return Response.json({
@@ -919,6 +925,8 @@ async function branchSession(req: Request, sessionId: string): Promise<Response>
       sourceRepository: launchInfo.repository,
       sourceWorktreeSession: launchInfo.worktreeSession,
     })
+
+    recentProjectsCache = null
 
     return Response.json({
       sessionId: result.sessionId,

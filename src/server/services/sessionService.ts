@@ -92,6 +92,8 @@ export type SessionLaunchInfo = {
   effortLevel?: string
 }
 
+type ProviderContextWindowHint = Pick<SessionLaunchInfo, 'runtimeProviderId' | 'runtimeModelId'>
+
 export type SessionInspectionTranscriptSnapshot = {
   launchInfo: SessionLaunchInfo
   metadata: TranscriptMetadataSnapshot
@@ -322,6 +324,43 @@ const USER_INTERRUPTION_TEXTS = new Set([
 const NO_RESPONSE_REQUESTED_TEXT = 'No response requested.'
 const TASK_NOTIFICATION_RE = /^<task-notification>\s*[\s\S]*<\/task-notification>$/i
 const TASK_NOTIFICATION_BLOCK_RE = /<task-notification>\s*[\s\S]*?<\/task-notification>/i
+const PROVIDER_MODEL_ALIAS_SEPARATORS = ['-', '_', ':', '/', '.', ' ']
+
+function normalizeProviderModelAlias(model: string): string {
+  return model
+    .trim()
+    .toLowerCase()
+    .replace(/\[1m\]$/i, '')
+    .replace(/:1m$/i, '')
+    .trim()
+}
+
+function providerModelLooksRelated(
+  transcriptModel: string,
+  configuredModel: string,
+): boolean {
+  const transcript = normalizeProviderModelAlias(transcriptModel)
+  const configured = normalizeProviderModelAlias(configuredModel)
+  if (!transcript || !configured) return false
+  if (transcript === configured) return true
+
+  const shorter = Math.min(transcript.length, configured.length)
+  if (shorter < 6) return false
+
+  return PROVIDER_MODEL_ALIAS_SEPARATORS.some((separator) => (
+    transcript.startsWith(`${configured}${separator}`) ||
+    configured.startsWith(`${transcript}${separator}`)
+  ))
+}
+
+function safeJsonLength(value: unknown): number {
+  if (value === undefined) return 0
+  try {
+    return JSON.stringify(value)?.length ?? 0
+  } catch {
+    return 0
+  }
+}
 
 // ============================================================================
 // Service
@@ -752,6 +791,58 @@ export class SessionService {
     return undefined
   }
 
+  private resolveTranscriptModifiedAtFromEntries(entries: RawEntry[]): string | null {
+    let modifiedAt: string | null = null
+    for (const entry of entries) {
+      if (
+        !entry.isMeta &&
+        (entry.type === 'user' || entry.type === 'assistant') &&
+        entry.message?.role
+      ) {
+        modifiedAt = this.latestTimestamp(modifiedAt, entry.timestamp)
+      }
+    }
+    return modifiedAt
+  }
+
+  private resolveRuntimeContextMetadataFromEntries(entries: RawEntry[]): ProviderContextWindowHint {
+    let runtimeProviderId: string | null | undefined
+    let runtimeModelId: string | undefined
+
+    for (const entry of entries) {
+      if (entry.type !== 'session-meta') continue
+      const record = entry as Record<string, unknown>
+      if (record.runtimeProviderId === null || typeof record.runtimeProviderId === 'string') {
+        runtimeProviderId = record.runtimeProviderId as string | null
+      }
+      if (typeof record.runtimeModelId === 'string') {
+        runtimeModelId = record.runtimeModelId
+      }
+    }
+
+    return {
+      ...(runtimeProviderId !== undefined ? { runtimeProviderId } : {}),
+      ...(runtimeModelId ? { runtimeModelId } : {}),
+    }
+  }
+
+  private applyRuntimeContextMetadata(
+    hint: ProviderContextWindowHint,
+    entry: RawEntry,
+  ): ProviderContextWindowHint {
+    if (entry.type !== 'session-meta') return hint
+
+    const record = entry as Record<string, unknown>
+    const nextHint: ProviderContextWindowHint = { ...hint }
+    if (record.runtimeProviderId === null || typeof record.runtimeProviderId === 'string') {
+      nextHint.runtimeProviderId = record.runtimeProviderId as string | null
+    }
+    if (typeof record.runtimeModelId === 'string') {
+      nextHint.runtimeModelId = record.runtimeModelId
+    }
+    return nextHint
+  }
+
   private resolveWorktreeSessionFromEntries(entries: RawEntry[]): PersistedWorktreeSession | null | undefined {
     for (let i = entries.length - 1; i >= 0; i--) {
       const entry = entries[i]
@@ -1013,6 +1104,18 @@ export class SessionService {
     }
 
     return false
+  }
+
+  private isVisibleTranscriptMessageEntry(entry: RawEntry): boolean {
+    if (!entry.message?.role || entry.isMeta) return false
+    if (
+      entry.type !== 'user' &&
+      entry.type !== 'assistant' &&
+      entry.type !== 'system'
+    ) {
+      return false
+    }
+    return !this.shouldHideTranscriptEntry(entry)
   }
 
   private isGoalLocalCommandOutput(output: string): boolean {
@@ -1492,7 +1595,7 @@ export class SessionService {
   private async getProviderContextWindowForSession(
     sessionId: string,
     model: string,
-    launchInfoOverride?: Pick<SessionLaunchInfo, 'runtimeProviderId'> | null,
+    launchInfoOverride?: ProviderContextWindowHint | null,
   ): Promise<number | undefined> {
     const launchInfo = launchInfoOverride ?? await this.getSessionLaunchInfo(sessionId).catch(() => null)
     const providerIds: string[] = []
@@ -1519,8 +1622,8 @@ export class SessionService {
 
     for (const providerId of providerIds) {
       const env = await this.providerService.getProviderRuntimeEnv(providerId).catch(() => null)
-	  const rawContextWindows = env?.[MODEL_CONTEXT_WINDOWS_ENV_KEY] ?? null
-	  // Step 1: Try matching the transcript model name directly (current behavior)
+      const rawContextWindows = env?.[MODEL_CONTEXT_WINDOWS_ENV_KEY] ?? null
+      // Step 1: Try matching the transcript model name directly (current behavior)
       const contextWindow = getModelContextWindowFromEnvValue(
         model,
         rawContextWindows,
@@ -1531,7 +1634,24 @@ export class SessionService {
         }
         return contextWindow
       }
-	  // Step 2: If transcript model name didn't match, try matching with
+
+      // Step 2: Prefer the model this session actually launched with. Some
+      // third-party APIs return provider-specific aliases, but Desktop persists
+      // the requested runtime model in session metadata.
+      if (launchInfo?.runtimeModelId) {
+        const runtimeModelWindow = getModelContextWindowFromEnvValue(
+          launchInfo.runtimeModelId,
+          rawContextWindows,
+        )
+        if (runtimeModelWindow !== undefined) {
+          if (runtimeModelWindow > MODEL_CONTEXT_WINDOW_DEFAULT && is1mContextDisabled()) {
+            return MODEL_CONTEXT_WINDOW_DEFAULT
+          }
+          return runtimeModelWindow
+        }
+      }
+
+      // Step 3: If transcript model name didn't match, try matching with
       // the provider's configured model names as fallback keys.
       // This handles the case where the API response returns a model name
       // that differs from the user-configured model name (e.g. provider
@@ -1540,6 +1660,7 @@ export class SessionService {
         for (const envKey of providerEnvModelKeys) {
           const configuredModel = env[envKey]
           if (!configuredModel) continue
+          if (!providerModelLooksRelated(model, configuredModel)) continue
           const fallbackWindow = getModelContextWindowFromEnvValue(
             configuredModel,
             rawContextWindows,
@@ -1564,7 +1685,7 @@ export class SessionService {
   private async getUniqueSavedProviderContextWindow(model: string): Promise<number | undefined> {
     const { providers } = await this.providerService.listProviders().catch(() => ({ providers: [] }))
     const matches: number[] = []
-	const providerEnvModelKeys = [
+    const providerEnvModelKeys = [
       'ANTHROPIC_MODEL',
       'ANTHROPIC_DEFAULT_HAIKU_MODEL',
       'ANTHROPIC_DEFAULT_SONNET_MODEL',
@@ -1573,9 +1694,9 @@ export class SessionService {
 
     for (const provider of providers) {
       const env = await this.providerService.getProviderRuntimeEnv(provider.id).catch(() => null)
-	  const rawContextWindows = env?.[MODEL_CONTEXT_WINDOWS_ENV_KEY] ?? null
+      const rawContextWindows = env?.[MODEL_CONTEXT_WINDOWS_ENV_KEY] ?? null
       // Step 1: Try matching the transcript model name directly
-	  const contextWindow = getModelContextWindowFromEnvValue(
+      const contextWindow = getModelContextWindowFromEnvValue(
         model,
         rawContextWindows,
       )
@@ -1584,11 +1705,12 @@ export class SessionService {
         continue
       }
 
-      // Step 2: Fallback — try matching with provider's configured model names
+      // Step 2: Fallback to provider configured model names.
       if (env && rawContextWindows) {
         for (const envKey of providerEnvModelKeys) {
           const configuredModel = env[envKey]
           if (!configuredModel) continue
+          if (!providerModelLooksRelated(model, configuredModel)) continue
           const fallbackWindow = getModelContextWindowFromEnvValue(
             configuredModel,
             rawContextWindows,
@@ -1610,7 +1732,7 @@ export class SessionService {
       return undefined
     }
 
-    const [contextWindow] = uniqueWindows
+    const contextWindow = [...uniqueWindows][0]!
     if (
       contextWindow > MODEL_CONTEXT_WINDOW_DEFAULT &&
       is1mContextDisabled()
@@ -1623,7 +1745,7 @@ export class SessionService {
   private async getTranscriptContextWindow(
     sessionId: string,
     model: string,
-    launchInfo?: Pick<SessionLaunchInfo, 'runtimeProviderId'> | null,
+    launchInfo?: ProviderContextWindowHint | null,
   ): Promise<number> {
     const providerContextWindow = await this.getProviderContextWindowForSession(
       sessionId,
@@ -1682,7 +1804,7 @@ export class SessionService {
     },
     estimatedTokensFromMessages: number,
     transcriptHasMediaInput: boolean,
-    launchInfo?: Pick<SessionLaunchInfo, 'runtimeProviderId'> | null,
+    launchInfo?: ProviderContextWindowHint | null,
   ): Promise<TranscriptContextEstimate> {
     const rawMaxTokens = await this.getTranscriptContextWindow(sessionId, latest.model, launchInfo)
     const promptTokens = latest.inputTokens + latest.cacheReadInputTokens + latest.cacheCreationInputTokens
@@ -1808,6 +1930,7 @@ export class SessionService {
       latest,
       estimatedTokensFromMessages,
       transcriptHasMediaInput,
+      this.resolveRuntimeContextMetadataFromEntries(entries),
     )
   }
 
@@ -1816,6 +1939,7 @@ export class SessionService {
     if (!found) return null
 
     const entries = await this.readJsonlFile(found.filePath)
+    let currentRuntimeHint: ProviderContextWindowHint = {}
     const models = new Map<string, TranscriptUsageSnapshot['models'][number]>()
     let totalCostUSD = 0
     let totalInputTokens = 0
@@ -1828,6 +1952,7 @@ export class SessionService {
     let lastUsageAt: number | null = null
 
     for (const entry of entries) {
+      currentRuntimeHint = this.applyRuntimeContextMetadata(currentRuntimeHint, entry)
       const usage = entry.message?.usage
       const model = entry.message?.model
       if (!usage || typeof model !== 'string') continue
@@ -1877,7 +2002,7 @@ export class SessionService {
           webSearchRequests: 0,
           costUSD: 0,
           costDisplay: '$0.0000',
-          contextWindow: await this.getTranscriptContextWindow(sessionId, model),
+          contextWindow: await this.getTranscriptContextWindow(sessionId, model, currentRuntimeHint),
           maxOutputTokens: getModelMaxOutputTokens(model).default,
         }
         models.set(model, modelUsage)
@@ -2333,7 +2458,7 @@ export class SessionService {
       id: sessionId,
       title,
       createdAt,
-      modifiedAt: stat.mtime.toISOString(),
+      modifiedAt: this.resolveTranscriptModifiedAtFromEntries(entries) ?? stat.mtime.toISOString(),
       messageCount: messages.length,
       projectPath: projectDir,
       projectRoot,
@@ -2359,6 +2484,75 @@ export class SessionService {
       sessionId,
       this.entriesToMessages(entries),
     )
+  }
+
+  async getSessionMessagesSignature(sessionId: string): Promise<string | null> {
+    const found = await this.findSessionFile(sessionId)
+    if (!found) return null
+
+    let count = 0
+    let last = ''
+    const agentToolUseIds = new Set<string>()
+    const resultLinks = new Map<string, string>()
+    await this.streamJsonlFile(found.filePath, (entry) => {
+      const agentToolUseId = this.extractAgentToolUseId(entry)
+      if (agentToolUseId) {
+        agentToolUseIds.add(agentToolUseId)
+      }
+      if (entry.message?.role === 'user' && Array.isArray(entry.message.content)) {
+        for (const block of entry.message.content as ContentBlock[]) {
+          if (
+            block.type !== 'tool_result' ||
+            typeof block.tool_use_id !== 'string' ||
+            !agentToolUseIds.has(block.tool_use_id)
+          ) {
+            continue
+          }
+          const agentId = this.extractAgentIdFromResultText(
+            this.extractTextFromContent(block.content),
+          )
+          if (agentId) {
+            resultLinks.set(block.tool_use_id, agentId)
+          }
+        }
+      }
+      if (!this.isVisibleTranscriptMessageEntry(entry)) return
+      count += 1
+      const contentLength = safeJsonLength(entry.content) + safeJsonLength(entry.message?.content)
+      last = [
+        entry.uuid ?? entry.messageId ?? '',
+        entry.type ?? '',
+        entry.timestamp ?? '',
+        entry.parentUuid ?? '',
+        entry.parent_tool_use_id ?? '',
+        contentLength,
+      ].join(':')
+    })
+
+    const subagentSignatures = await Promise.all(
+      [...resultLinks.entries()].map(async ([parentToolUseId, agentId]) => {
+        let childCount = 0
+        let childLast = ''
+        await this.streamJsonlFile(this.subagentTranscriptPath(found.projectDir, sessionId, agentId), (entry) => {
+          if (!this.isVisibleTranscriptMessageEntry(entry)) return
+          childCount += 1
+          const contentLength = safeJsonLength(entry.content) + safeJsonLength(entry.message?.content)
+          childLast = [
+            parentToolUseId,
+            agentId,
+            entry.uuid ?? entry.messageId ?? '',
+            entry.type ?? '',
+            entry.timestamp ?? '',
+            entry.parentUuid ?? '',
+            entry.parent_tool_use_id ?? '',
+            contentLength,
+          ].join(':')
+        })
+        return `${parentToolUseId}:${agentId}:${childCount}:${childLast}`
+      }),
+    )
+
+    return `${count}:${last}:${subagentSignatures.join('|')}`
   }
 
   /**
@@ -2615,7 +2809,11 @@ export class SessionService {
     this.invalidateSessionListCache()
   }
 
-  async clearSessionTranscript(sessionId: string, fallbackWorkDir?: string): Promise<void> {
+  async clearSessionTranscript(
+    sessionId: string,
+    fallbackWorkDir?: string,
+    preservedPermissionMode?: string,
+  ): Promise<void> {
     let found = await this.findSessionFile(sessionId)
     if (!found && fallbackWorkDir) {
       const resolvedPath = path.resolve(normalizeDriveRootPathForPlatform(fallbackWorkDir))
@@ -2634,6 +2832,12 @@ export class SessionService {
     const entries = await this.readJsonlFile(found.filePath)
     const workDir = this.resolveWorkDirFromEntries(entries, found.projectDir) || fallbackWorkDir || process.cwd()
     const repository = this.resolveRepositoryFromEntries(entries)
+    const permissionMode = (
+      preservedPermissionMode &&
+      VALID_SESSION_PERMISSION_MODES.has(preservedPermissionMode)
+    )
+      ? preservedPermissionMode
+      : this.resolvePermissionModeFromEntries(entries)
     const now = new Date().toISOString()
 
     const initialEntry = {
@@ -2652,6 +2856,7 @@ export class SessionService {
       isMeta: true,
       workDir,
       repository,
+      ...(permissionMode ? { permissionMode } : {}),
       timestamp: now,
     }
 

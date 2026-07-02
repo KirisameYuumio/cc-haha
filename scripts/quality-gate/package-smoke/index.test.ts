@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
+  currentPackageSmokeArch,
   currentPackageSmokePlatform,
 } from './current'
 import {
@@ -58,6 +59,9 @@ describe('package smoke args', () => {
     expect(currentPackageSmokePlatform('win32')).toBe('windows')
     expect(currentPackageSmokePlatform('linux')).toBe('linux')
     expect(currentPackageSmokePlatform('freebsd')).toBeNull()
+    expect(currentPackageSmokeArch('arm64')).toBe('arm64')
+    expect(currentPackageSmokeArch('x64')).toBe('x64')
+    expect(currentPackageSmokeArch('ia32')).toBeNull()
   })
 })
 
@@ -318,11 +322,11 @@ describe('packaged artifact inspection', () => {
 
     writeFile(rootDir, 'desktop/build-artifacts/windows-arm64/Claude-Code-Haha-0.3.1-arm64.exe')
     writeFile(rootDir, 'desktop/build-artifacts/windows-arm64/Claude-Code-Haha-0.3.1-arm64.exe.blockmap')
-    writeFile(rootDir, 'desktop/build-artifacts/windows-arm64/win-unpacked/resources/app.asar')
-    writeFile(rootDir, 'desktop/build-artifacts/windows-arm64/win-unpacked/resources/app-update.yml')
-    writeFile(rootDir, 'desktop/build-artifacts/windows-arm64/win-unpacked/resources/app.asar.unpacked/src-tauri/binaries/claude-sidecar-aarch64-pc-windows-msvc.exe')
-    writeFile(rootDir, 'desktop/build-artifacts/windows-arm64/win-unpacked/resources/app.asar.unpacked/node_modules/node-pty/package.json')
-    writeFile(rootDir, 'desktop/build-artifacts/windows-arm64/win-unpacked/resources/app.asar.unpacked/node_modules/node-pty/prebuilds/win32-arm64/pty.node')
+    writeFile(rootDir, 'desktop/build-artifacts/windows-arm64/win-arm64-unpacked/resources/app.asar')
+    writeFile(rootDir, 'desktop/build-artifacts/windows-arm64/win-arm64-unpacked/resources/app-update.yml')
+    writeFile(rootDir, 'desktop/build-artifacts/windows-arm64/win-arm64-unpacked/resources/app.asar.unpacked/src-tauri/binaries/claude-sidecar-aarch64-pc-windows-msvc.exe')
+    writeFile(rootDir, 'desktop/build-artifacts/windows-arm64/win-arm64-unpacked/resources/app.asar.unpacked/node_modules/node-pty/package.json')
+    writeFile(rootDir, 'desktop/build-artifacts/windows-arm64/win-arm64-unpacked/resources/app.asar.unpacked/node_modules/node-pty/prebuilds/win32-arm64/pty.node')
     writeFile(rootDir, 'desktop/build-artifacts/windows-arm64/latest.yml', 'path: Claude-Code-Haha-0.3.1-arm64.exe\n')
 
     const report = await inspectPackagedArtifacts(rootDir, {
@@ -343,11 +347,11 @@ describe('packaged artifact inspection', () => {
 
     writeFile(rootDir, 'desktop/build-artifacts/windows-arm64/Claude-Code-Haha-0.3.1-arm64.exe')
     writeFile(rootDir, 'desktop/build-artifacts/windows-arm64/Claude-Code-Haha-0.3.1-arm64.exe.blockmap')
-    writeFile(rootDir, 'desktop/build-artifacts/windows-arm64/win-unpacked/resources/app.asar')
-    writeFile(rootDir, 'desktop/build-artifacts/windows-arm64/win-unpacked/resources/app-update.yml')
-    writeFile(rootDir, 'desktop/build-artifacts/windows-arm64/win-unpacked/resources/app.asar.unpacked/src-tauri/binaries/claude-sidecar-x86_64-pc-windows-msvc.exe')
-    writeFile(rootDir, 'desktop/build-artifacts/windows-arm64/win-unpacked/resources/app.asar.unpacked/node_modules/node-pty/package.json')
-    writeFile(rootDir, 'desktop/build-artifacts/windows-arm64/win-unpacked/resources/app.asar.unpacked/node_modules/node-pty/prebuilds/win32-x64/pty.node')
+    writeFile(rootDir, 'desktop/build-artifacts/windows-arm64/win-arm64-unpacked/resources/app.asar')
+    writeFile(rootDir, 'desktop/build-artifacts/windows-arm64/win-arm64-unpacked/resources/app-update.yml')
+    writeFile(rootDir, 'desktop/build-artifacts/windows-arm64/win-arm64-unpacked/resources/app.asar.unpacked/src-tauri/binaries/claude-sidecar-x86_64-pc-windows-msvc.exe')
+    writeFile(rootDir, 'desktop/build-artifacts/windows-arm64/win-arm64-unpacked/resources/app.asar.unpacked/node_modules/node-pty/package.json')
+    writeFile(rootDir, 'desktop/build-artifacts/windows-arm64/win-arm64-unpacked/resources/app.asar.unpacked/node_modules/node-pty/prebuilds/win32-x64/pty.node')
     writeFile(rootDir, 'desktop/build-artifacts/windows-arm64/latest.yml', 'path: Claude-Code-Haha-0.3.1-arm64.exe\n')
 
     const report = await inspectPackagedArtifacts(rootDir, {
@@ -393,6 +397,29 @@ describe('packaged artifact inspection', () => {
     const report = await inspectPackagedArtifacts(rootDir, { platform: 'windows', packageKind: 'release' })
 
     expect(report.passed).toBe(false)
+    expect(report.missingChecks.some((check) => check.label.includes('.exe installer'))).toBe(true)
+  })
+
+  test('does not treat win-arm64-unpacked executables as Windows release installers', async () => {
+    const rootDir = createRepoRoot()
+    tempDirs.push(rootDir)
+
+    writeFile(rootDir, 'desktop/build-artifacts/windows-arm64/win-arm64-unpacked/Claude Code Haha.exe')
+    writeFile(rootDir, 'desktop/build-artifacts/windows-arm64/win-arm64-unpacked/resources/app.asar')
+    writeFile(rootDir, 'desktop/build-artifacts/windows-arm64/win-arm64-unpacked/resources/app-update.yml')
+    writeFile(rootDir, 'desktop/build-artifacts/windows-arm64/win-arm64-unpacked/resources/app.asar.unpacked/src-tauri/binaries/claude-sidecar-aarch64-pc-windows-msvc.exe')
+    writeFile(rootDir, 'desktop/build-artifacts/windows-arm64/win-arm64-unpacked/resources/app.asar.unpacked/node_modules/node-pty/package.json')
+    writeFile(rootDir, 'desktop/build-artifacts/windows-arm64/win-arm64-unpacked/resources/app.asar.unpacked/node_modules/node-pty/prebuilds/win32-arm64/pty.node')
+
+    const report = await inspectPackagedArtifacts(rootDir, {
+      platform: 'windows',
+      arch: 'arm64',
+      packageKind: 'release',
+      artifactsDir: 'desktop/build-artifacts/windows-arm64',
+    })
+
+    expect(report.passed).toBe(false)
+    expect(report.packagedArtifacts.some((artifact) => artifact.path.includes('win-arm64-unpacked'))).toBe(false)
     expect(report.missingChecks.some((check) => check.label.includes('.exe installer'))).toBe(true)
   })
 

@@ -458,6 +458,7 @@ function TraceEmpty() {
 function traceSnapshotSignature(trace: TraceSessionData): string {
   return JSON.stringify({
     summary: trace.summary,
+    messageSignature: trace.messageSignature ?? null,
     calls: trace.calls.map((call) => ({
       id: call.id,
       status: call.status,

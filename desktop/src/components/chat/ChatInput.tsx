@@ -43,6 +43,7 @@ import {
 } from '../../lib/composerAttachments'
 import { useComposerFileDrop } from './useComposerFileDrop'
 import { shouldSubmitOnEnter } from './sendShortcut'
+import type { PermissionMode } from '../../types/settings'
 
 type GitInfo = SessionGitInfo
 
@@ -565,12 +566,21 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
   ) => {
     if (!activeTabId) return null
     const oldId = activeTabId
-    const { createSession, deleteSession } = useSessionStore.getState()
+    const sessionStore = useSessionStore.getState()
+    const { createSession, deleteSession } = sessionStore
     const { replaceTabSession } = useTabStore.getState()
     const { disconnectSession, connectToSession, setComposerDraft } = useChatStore.getState()
+    const permissionMode = sessionStore.sessions.find((session) => session.id === oldId)
+      ?.permissionMode as PermissionMode | undefined
+    const createOptions = repository || permissionMode
+      ? {
+          ...(repository ? { repository } : {}),
+          ...(permissionMode ? { permissionMode } : {}),
+        }
+      : undefined
     const newId = await createSession(
       workDir || undefined,
-      repository ? { repository } : undefined,
+      createOptions,
     )
     if (inputRef.current.length > 0 || attachmentsRef.current.length > 0) {
       setComposerDraft(newId, {

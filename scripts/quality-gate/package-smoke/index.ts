@@ -573,9 +573,9 @@ function inspectMacosArtifacts(rootDir: string, report: PackageSmokeReport, opti
 function inspectWindowsArtifacts(rootDir: string, report: PackageSmokeReport) {
   const installers = findMatches(report.artifactsDir, (candidate) => {
     const normalized = normalizePath(candidate)
-    return normalized.endsWith('.exe') && !normalized.includes('/win-unpacked/')
+    return normalized.endsWith('.exe') && !isInsideWindowsUnpackedDir(normalized)
   })
-  const unpackedDir = findMatches(report.artifactsDir, (candidate) => normalizePath(candidate).endsWith('/win-unpacked'), { directoriesOnly: true })[0]
+  const unpackedDir = findWindowsUnpackedDir(report.artifactsDir, report.arch)
   const electronDir = join(report.artifactsDir, 'electron')
   const updateMetadata = findMatches(report.artifactsDir, (candidate) => candidate.endsWith('latest.yml'))
   const releaseMode = report.packageKind === 'release' || (report.packageKind === 'auto' && (installers.length > 0 || updateMetadata.length > 0))
@@ -640,8 +640,8 @@ function inspectWindowsArtifacts(rootDir: string, report: PackageSmokeReport) {
     )
   } else {
     report.missingChecks.push({
-      label: 'Windows unpacked directory (win-unpacked) for static resource inspection',
-      path: toRelative(rootDir, join(electronDir, 'win-unpacked')),
+      label: 'Windows unpacked directory for static resource inspection',
+      path: toRelative(rootDir, join(electronDir, report.arch === 'arm64' ? 'win-arm64-unpacked' : 'win-unpacked')),
     })
   }
 
@@ -655,6 +655,29 @@ function inspectWindowsArtifacts(rootDir: string, report: PackageSmokeReport) {
   if (report.hostPlatform !== 'windows') {
     report.notes.push(`Host platform is ${report.hostPlatform}, so Windows verification stayed artifact-only.`)
   }
+}
+
+function isWindowsUnpackedDirPath(candidate: string): boolean {
+  return /\/win(?:-[a-z0-9_]+)?-unpacked$/.test(normalizePath(candidate))
+}
+
+function isInsideWindowsUnpackedDir(candidate: string): boolean {
+  return /\/win(?:-[a-z0-9_]+)?-unpacked\//.test(normalizePath(candidate))
+}
+
+function findWindowsUnpackedDir(artifactsDir: string, arch?: 'x64' | 'arm64'): string | undefined {
+  const unpackedDirs = findMatches(
+    artifactsDir,
+    isWindowsUnpackedDirPath,
+    { directoriesOnly: true },
+  )
+  if (arch === 'arm64') {
+    return unpackedDirs.find((candidate) => normalizePath(candidate).endsWith('/win-arm64-unpacked')) ?? unpackedDirs[0]
+  }
+  if (arch === 'x64') {
+    return unpackedDirs.find((candidate) => normalizePath(candidate).endsWith('/win-unpacked')) ?? unpackedDirs[0]
+  }
+  return unpackedDirs[0]
 }
 
 function inspectLinuxArtifacts(rootDir: string, report: PackageSmokeReport) {

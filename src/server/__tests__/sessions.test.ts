@@ -755,6 +755,35 @@ describe('SessionService', () => {
     expect(detail!.messages[1]!.type).toBe('assistant')
   })
 
+  it('should derive session detail modifiedAt from transcript messages', async () => {
+    const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    const filePath = await writeSessionFile('-tmp-project', sessionId, [
+      {
+        ...makeSessionMetaEntry('/tmp/project'),
+        timestamp: '2026-01-03T00:00:00.000Z',
+      },
+      {
+        ...makeUserEntry('Earlier user work'),
+        timestamp: '2026-01-01T00:01:00.000Z',
+      },
+      {
+        ...makeAssistantEntry('Earlier assistant reply'),
+        timestamp: '2026-01-01T00:02:00.000Z',
+      },
+      {
+        type: 'custom-title',
+        customTitle: 'Later title metadata',
+        timestamp: '2026-01-04T00:00:00.000Z',
+      },
+    ])
+    const mtime = new Date('2026-01-05T00:00:00.000Z')
+    await fs.utimes(filePath, mtime, mtime)
+
+    const detail = await service.getSession(sessionId)
+
+    expect(detail?.modifiedAt).toBe('2026-01-01T00:02:00.000Z')
+  })
+
   it('should skip meta entries in messages', async () => {
     const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
     await writeSessionFile('-tmp-project', sessionId, [
@@ -928,6 +957,92 @@ describe('SessionService', () => {
         content: 'alpha body',
       },
     ])
+  })
+
+  it('should include linked subagent transcript changes in the message signature', async () => {
+    const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    const projectDir = '-tmp-project'
+    const agentId = 'abc123'
+
+    await writeSessionFile(projectDir, sessionId, [
+      makeSnapshotEntry(),
+      {
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'Agent:0',
+              name: 'Agent',
+              input: { description: 'Inspect alpha' },
+            },
+          ],
+        },
+        uuid: crypto.randomUUID(),
+        timestamp: '2026-01-01T00:00:02.000Z',
+      },
+      {
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'Agent:0',
+              content: [
+                {
+                  type: 'text',
+                  text: `alpha summary\nagentId: ${agentId}`,
+                },
+              ],
+            },
+          ],
+        },
+        uuid: crypto.randomUUID(),
+        timestamp: '2026-01-01T00:00:03.000Z',
+      },
+    ])
+    const subagentFile = await writeSubagentTranscriptFile(projectDir, sessionId, agentId, [
+      {
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'Read:0',
+              name: 'Read',
+              input: { file_path: '/tmp/alpha.txt' },
+            },
+          ],
+        },
+        uuid: crypto.randomUUID(),
+        timestamp: '2026-01-01T00:00:04.000Z',
+      },
+    ])
+
+    const before = await service.getSessionMessagesSignature(sessionId)
+
+    await fs.appendFile(subagentFile, `${JSON.stringify({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'Read:0',
+            content: 'updated alpha body',
+          },
+        ],
+      },
+      uuid: crypto.randomUUID(),
+      timestamp: '2026-01-01T00:00:05.000Z',
+    })}\n`)
+
+    const after = await service.getSessionMessagesSignature(sessionId)
+
+    expect(before).not.toBe(after)
   })
 
   it('should hide synthetic interruption, no-response, and malformed command breadcrumb transcript entries', async () => {
@@ -1361,6 +1476,22 @@ describe('SessionService', () => {
       worktree: true,
       worktreePath: expect.stringContaining(path.join('.claude', 'worktrees', 'desktop-feature-rail-')),
     })
+  })
+
+  it('should preserve permission metadata when clearing placeholder transcripts', async () => {
+    const workDir = path.join(tmpDir, 'clear-permission-workdir')
+    await fs.mkdir(workDir, { recursive: true })
+    const { sessionId } = await (service.createSession as unknown as (
+      workDir?: string,
+      repositoryOptions?: unknown,
+      permissionMode?: string,
+    ) => Promise<{ sessionId: string; workDir: string }>)(workDir, undefined, 'acceptEdits')
+
+    await service.clearSessionTranscript(sessionId, workDir)
+    const launchInfo = await service.getSessionLaunchInfo(sessionId)
+
+    expect(launchInfo?.workDir).toBe(await fs.realpath(workDir))
+    expect(launchInfo?.permissionMode).toBe('acceptEdits')
   })
 
   it('should persist session permission mode in launch metadata', async () => {
@@ -2533,6 +2664,35 @@ describe('Sessions API', () => {
     // Verify it's gone
     const res2 = await fetch(`${baseUrl}/api/sessions/${sessionId}`)
     expect(res2.status).toBe(404)
+  })
+
+  it('DELETE /api/sessions/:id should invalidate recent projects cache', async () => {
+    const workDir = await fs.mkdtemp(path.join(tmpDir, 'recent-cache-delete-'))
+    const createRes = await fetch(`${baseUrl}/api/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workDir }),
+    })
+    expect(createRes.status).toBe(201)
+    const { sessionId } = await createRes.json() as { sessionId: string }
+    const realWorkDir = await fs.realpath(workDir)
+
+    const firstRecentRes = await fetch(`${baseUrl}/api/sessions/recent-projects?limit=20`)
+    expect(firstRecentRes.status).toBe(200)
+    const firstRecent = await firstRecentRes.json() as {
+      projects: Array<{ realPath: string }>
+    }
+    expect(firstRecent.projects.some((project) => project.realPath === realWorkDir)).toBe(true)
+
+    const deleteRes = await fetch(`${baseUrl}/api/sessions/${sessionId}`, { method: 'DELETE' })
+    expect(deleteRes.status).toBe(200)
+
+    const secondRecentRes = await fetch(`${baseUrl}/api/sessions/recent-projects?limit=20`)
+    expect(secondRecentRes.status).toBe(200)
+    const secondRecent = await secondRecentRes.json() as {
+      projects: Array<{ realPath: string }>
+    }
+    expect(secondRecent.projects.some((project) => project.realPath === realWorkDir)).toBe(false)
   })
 
   it('DELETE /api/sessions/:id should remove matching IM adapter session mappings', async () => {

@@ -535,6 +535,9 @@ async function handleDesktopClearCommand(
   const { sessionId } = ws.data
 
   const workDir = conversationService.getSessionWorkDir(sessionId)
+  const permissionMode = conversationService.hasSession(sessionId)
+    ? conversationService.getSessionPermissionMode(sessionId)
+    : undefined
   conversationService.stopSession(sessionId)
   conversationService.clearOutputCallbacks(sessionId)
   sessionSlashCommands.delete(sessionId)
@@ -542,7 +545,7 @@ async function handleDesktopClearCommand(
   cleanupStreamState(sessionId)
 
   try {
-    await sessionService.clearSessionTranscript(sessionId, workDir || undefined)
+    await sessionService.clearSessionTranscript(sessionId, workDir || undefined, permissionMode)
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
     sendMessage(ws, {
