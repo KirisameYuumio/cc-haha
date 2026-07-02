@@ -6,6 +6,7 @@ import {
   type CreateSessionRepositoryOptions,
 } from '../api/sessions'
 import { useSessionRuntimeStore } from './sessionRuntimeStore'
+import { useSettingsStore } from './settingsStore'
 import { useTabStore } from './tabStore'
 import type { SessionListItem } from '../types/session'
 import type { PermissionMode } from '../types/settings'
@@ -79,10 +80,11 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   },
 
   createSession: async (workDir?: string, options?: CreateSessionOptions) => {
+    const requestedPermissionMode = options?.permissionMode ?? getDefaultSessionPermissionMode()
     const { sessionId: id, workDir: resolvedWorkDir } = await sessionsApi.create({
       ...(workDir ? { workDir } : {}),
       ...(options?.repository ? { repository: options.repository } : {}),
-      ...(options?.permissionMode ? { permissionMode: options.permissionMode } : {}),
+      ...(requestedPermissionMode ? { permissionMode: requestedPermissionMode } : {}),
     })
     const now = new Date().toISOString()
     const optimisticSession: SessionListItem = {
@@ -95,7 +97,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       workDir: resolvedWorkDir ?? workDir ?? null,
       projectRoot: resolvedWorkDir ?? workDir ?? null,
       workDirExists: true,
-      permissionMode: options?.permissionMode,
+      permissionMode: requestedPermissionMode,
     }
 
     set((state) => ({
@@ -232,6 +234,11 @@ function buildSessionListParams(project: string | undefined) {
   return project
     ? { project, limit: SESSION_LIST_LIMIT }
     : { limit: SESSION_LIST_LIMIT }
+}
+
+function getDefaultSessionPermissionMode(): PermissionMode | undefined {
+  const mode = useSettingsStore.getState().permissionMode
+  return mode === 'default' ? undefined : mode
 }
 
 function mergeSessionList(

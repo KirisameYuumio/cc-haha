@@ -17,6 +17,7 @@ vi.mock('../api/sessions', () => ({
 }))
 
 import { useSessionStore } from './sessionStore'
+import { useSettingsStore } from './settingsStore'
 import { useTabStore } from './tabStore'
 
 const initialState = useSessionStore.getState()
@@ -59,11 +60,13 @@ describe('sessionStore', () => {
       isLoading: false,
       error: null,
     })
+    useSettingsStore.setState({ permissionMode: 'default' })
     useTabStore.setState({ tabs: [], activeTabId: null })
   })
 
   afterEach(() => {
     useSessionStore.setState(initialState)
+    useSettingsStore.setState({ permissionMode: 'default' })
     useTabStore.setState({ tabs: [], activeTabId: null })
   })
 
@@ -260,6 +263,36 @@ describe('sessionStore', () => {
     })
     expect(useSessionStore.getState().sessions[0]?.workDir)
       .toBe('/workspace/repo/.claude/worktrees/desktop-feature-rail-12345678')
+  })
+
+  it('uses the global default permission mode for new sessions when no session override is provided', async () => {
+    useSettingsStore.setState({ permissionMode: 'bypassPermissions' })
+    createMock.mockResolvedValue({ sessionId: 'session-default-permission', workDir: '/workspace/repo' })
+    listMock.mockImplementation(() => new Promise(() => {}))
+
+    await useSessionStore.getState().createSession('/workspace/repo')
+
+    expect(createMock).toHaveBeenCalledWith({
+      workDir: '/workspace/repo',
+      permissionMode: 'bypassPermissions',
+    })
+    expect(useSessionStore.getState().sessions[0]?.permissionMode).toBe('bypassPermissions')
+  })
+
+  it('keeps an explicit session permission override ahead of the global default', async () => {
+    useSettingsStore.setState({ permissionMode: 'bypassPermissions' })
+    createMock.mockResolvedValue({ sessionId: 'session-explicit-permission', workDir: '/workspace/repo' })
+    listMock.mockImplementation(() => new Promise(() => {}))
+
+    await useSessionStore.getState().createSession('/workspace/repo', {
+      permissionMode: 'acceptEdits',
+    })
+
+    expect(createMock).toHaveBeenCalledWith({
+      workDir: '/workspace/repo',
+      permissionMode: 'acceptEdits',
+    })
+    expect(useSessionStore.getState().sessions[0]?.permissionMode).toBe('acceptEdits')
   })
 
   it('returns the branched session before the background refresh completes', async () => {

@@ -13,6 +13,7 @@ const windowControlsMock = vi.hoisted(() => ({
   show: true,
 }))
 const scrollIntoViewMock = vi.hoisted(() => vi.fn())
+const deleteSessionMock = vi.hoisted(() => vi.fn())
 const openProjectMenuMock = vi.hoisted(() => ({
   paths: [] as Array<string | null | undefined>,
 }))
@@ -45,6 +46,17 @@ function makeChatSession(chatState: ChatState): PerSessionState {
 
 vi.mock('@tauri-apps/api/window', () => ({
   getCurrentWindow: getCurrentWindowMock,
+}))
+
+vi.mock('../../api/sessions', () => ({
+  sessionsApi: {
+    batchDelete: vi.fn(),
+    branch: vi.fn(),
+    create: vi.fn(),
+    delete: deleteSessionMock,
+    list: vi.fn(),
+    rename: vi.fn(),
+  },
 }))
 
 vi.mock('../../i18n', () => ({
@@ -142,6 +154,8 @@ describe('TabBar', () => {
     startDraggingMock.mockClear()
     getCurrentWindowMock.mockClear()
     scrollIntoViewMock.mockClear()
+    deleteSessionMock.mockReset()
+    deleteSessionMock.mockResolvedValue(undefined)
     openProjectMenuMock.paths = []
     windowControlsMock.show = true
     vi.resetModules()

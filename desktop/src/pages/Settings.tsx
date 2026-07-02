@@ -26,6 +26,7 @@ import { ConfirmDialog } from '../components/shared/ConfirmDialog'
 import { Input } from '../components/shared/Input'
 import { Button } from '../components/shared/Button'
 import { Dropdown } from '../components/shared/Dropdown'
+import { PermissionModeSelector } from '../components/controls/PermissionModeSelector'
 import type { ThemeMode, UpdateProxyMode, NetworkProxyMode, WebSearchMode, AppMode, ChatSendBehavior, OutputStyleSource } from '../types/settings'
 import type { Locale } from '../i18n'
 import type { SavedProvider, UpdateProviderInput, ProviderTestResult, ModelMapping, Model1mSupport, ApiFormat, ProviderAuthStrategy } from '../types/provider'
@@ -1933,6 +1934,8 @@ export function GeneralSettings() {
   const {
     thinkingEnabled,
     setThinkingEnabled,
+    permissionMode,
+    setPermissionMode,
     autoDreamEnabled,
     setAutoDreamEnabled,
     locale,
@@ -2583,6 +2586,29 @@ export function GeneralSettings() {
             {outputStyleError}
           </p>
         )}
+      </div>
+
+      <div className="mt-8">
+        <h2 className="text-base font-semibold text-[var(--color-text-primary)] mb-1">{t('settings.general.defaultPermissionTitle')}</h2>
+        <p className="text-sm text-[var(--color-text-tertiary)] mb-3">{t('settings.general.defaultPermissionDescription')}</p>
+        <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-4 py-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-[var(--color-text-primary)]">
+                {t('settings.general.defaultPermissionLabel')}
+              </div>
+              <div className="mt-1 text-xs leading-5 text-[var(--color-text-tertiary)]">
+                {t('settings.general.defaultPermissionHint')}
+              </div>
+            </div>
+            <PermissionModeSelector
+              value={permissionMode}
+              onChange={(mode) => void setPermissionMode(mode)}
+              workDir={t('settings.general.defaultPermissionScope')}
+              menuPlacement="bottom"
+            />
+          </div>
+        </div>
       </div>
 
       <div className="mt-8">
