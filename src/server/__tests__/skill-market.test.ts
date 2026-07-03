@@ -57,6 +57,19 @@ describe('skill market source normalization', () => {
     })
   })
 
+  it('uses malicious ClawHub scanner summaries for malicious scans', () => {
+    expect(normalizeClawHubScan({
+      status: 'malicious',
+      scanners: {
+        metadata: { status: 'clean', summary: 'No dangerous patterns detected.' },
+        staticAnalysis: { status: 'malicious', summary: 'Credential exfiltration detected.' },
+      },
+    })).toMatchObject({
+      trustState: 'blocked',
+      trustSummary: 'Credential exfiltration detected.',
+    })
+  })
+
   it('normalizes SkillHub list items as fallback candidates with Chinese summary', () => {
     const result = normalizeSkillHubList(SKILLHUB_TOP_SKILLS_RESPONSE)
 
@@ -130,6 +143,38 @@ describe('skill market source normalization', () => {
     })
   })
 
+  it('rejects SkillHub external URLs with userinfo', () => {
+    const list = normalizeSkillHubList({
+      code: 0,
+      data: {
+        skills: [
+          {
+            slug: 'skill-vetter',
+            name: 'Skill Vetter',
+            upstream_url: 'https://evil.test@github.com/path',
+          },
+        ],
+      },
+    })
+
+    expect(list.items[0]).toMatchObject({
+      canonicalUrl: 'https://skillhub.cn/skills/skill-vetter',
+      upstreamUrl: 'https://skillhub.cn/skills/skill-vetter',
+    })
+
+    const detail = normalizeSkillHubDetail({
+      skill: {
+        slug: 'skill-vetter',
+        displayName: 'Skill Vetter',
+        sourceUrl: 'https://user:password@github.com/path',
+      },
+    })
+
+    expect(detail).toMatchObject({
+      canonicalUrl: 'https://skillhub.cn/skills/skill-vetter',
+    })
+  })
+
   it('normalizes SkillHub detail security reports', () => {
     const detail = normalizeSkillHubDetail(SKILLHUB_DETAIL_RESPONSE)
 
@@ -139,6 +184,24 @@ describe('skill market source normalization', () => {
       slug: 'skill-vetter',
       trustState: 'benign',
       trustSummary: '安全，无风险',
+    })
+  })
+
+  it('uses malicious SkillHub report summaries for blocked details', () => {
+    const detail = normalizeSkillHubDetail({
+      securityReports: {
+        community: { status: 'benign', statusText: 'safe' },
+        staticAnalysis: { status: 'malicious', statusText: 'Credential exfiltration detected.' },
+      },
+      skill: {
+        slug: 'skill-vetter',
+        displayName: 'Skill Vetter',
+      },
+    })
+
+    expect(detail).toMatchObject({
+      trustState: 'blocked',
+      trustSummary: 'Credential exfiltration detected.',
     })
   })
 })

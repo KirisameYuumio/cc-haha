@@ -61,6 +61,9 @@ function normalizeExternalUrl(value: string | undefined, slug: string) {
 
   try {
     const url = new URL(value)
+    if (url.username || url.password) {
+      return fallbackUrl
+    }
     if (url.protocol === 'https:' && ALLOWED_EXTERNAL_URL_HOSTS.has(url.hostname)) {
       return url.toString()
     }
@@ -77,7 +80,12 @@ function trustFromReports(reports?: Record<string, { status?: string; statusText
 } {
   const values = Object.values(reports ?? {})
   if (values.some((report) => report.status === 'malicious' || report.status === 'blocked')) {
-    return { trustState: 'blocked', trustSummary: values.find((report) => report.statusText)?.statusText }
+    return {
+      trustState: 'blocked',
+      trustSummary: values.find((report) =>
+        (report.status === 'malicious' || report.status === 'blocked') && report.statusText
+      )?.statusText,
+    }
   }
   if (values.length > 0 && values.every((report) => report.status === 'benign')) {
     return { trustState: 'benign', trustSummary: values.find((report) => report.statusText)?.statusText }

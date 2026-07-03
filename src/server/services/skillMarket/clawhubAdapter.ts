@@ -56,15 +56,27 @@ export function normalizeClawHubScan(payload: ClawHubScanResponse): {
   trustSummary?: string
   packageSha256?: string
 } {
-  const scannerSummary = Object.values(payload.scanners ?? {}).find((entry) => entry.summary)?.summary
+  const scannerEntries = Object.values(payload.scanners ?? {})
+  const scannerSummary = scannerEntries.find((entry) => entry.summary)?.summary
+  const scannerSummaryForStatuses = (statuses: string[]) =>
+    scannerEntries.find((entry) => entry.summary && entry.status && statuses.includes(entry.status))?.summary
+
   if (payload.status === 'clean' && !payload.hasWarnings) {
     return { trustState: 'clean', trustSummary: scannerSummary, packageSha256: payload.sha256 }
   }
   if (payload.status === 'malicious' || payload.status === 'blocked') {
-    return { trustState: 'blocked', trustSummary: scannerSummary, packageSha256: payload.sha256 }
+    return {
+      trustState: 'blocked',
+      trustSummary: scannerSummaryForStatuses(['malicious', 'blocked']) ?? scannerSummary,
+      packageSha256: payload.sha256,
+    }
   }
   if (payload.status === 'suspicious' || payload.hasWarnings) {
-    return { trustState: 'warning', trustSummary: scannerSummary, packageSha256: payload.sha256 }
+    return {
+      trustState: 'warning',
+      trustSummary: scannerSummaryForStatuses(['suspicious', 'warning']) ?? scannerSummary,
+      packageSha256: payload.sha256,
+    }
   }
   return { trustState: 'unknown', trustSummary: scannerSummary, packageSha256: payload.sha256 }
 }
