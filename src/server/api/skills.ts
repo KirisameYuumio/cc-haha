@@ -403,6 +403,11 @@ async function collectAllSkills(cwd?: string): Promise<SkillMeta[]> {
   return skills
 }
 
+export async function collectUserSkillNames(): Promise<Set<string>> {
+  const skills = await collectAllSkills(undefined)
+  return new Set(skills.filter((skill) => skill.source === 'user').map((skill) => skill.name))
+}
+
 export async function listSkillSlashCommands(cwd?: string): Promise<SkillSlashCommand[]> {
   const requestedCwd = cwd || getCwd()
   const [skills, legacyCommands] = await Promise.all([

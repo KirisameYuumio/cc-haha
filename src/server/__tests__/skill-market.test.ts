@@ -1,4 +1,9 @@
-import { describe, expect, it } from 'bun:test'
+import { afterEach, describe, expect, it, mock } from 'bun:test'
+import {
+  handleSkillMarketApi,
+  resetSkillMarketServiceFactoryForTests,
+  setSkillMarketServiceFactoryForTests,
+} from '../api/skill-market.js'
 import { normalizeClawHubList, normalizeClawHubScan } from '../services/skillMarket/clawhubAdapter.js'
 import { analyzeSkillRisk } from '../services/skillMarket/risk.js'
 import { createSkillMarketService } from '../services/skillMarket/service.js'
@@ -736,5 +741,121 @@ describe('skill market risk analysis', () => {
     })
 
     expect(risk).toEqual([])
+  })
+})
+
+describe('skill market API', () => {
+  afterEach(() => {
+    resetSkillMarketServiceFactoryForTests()
+  })
+
+  it('rejects unsupported methods', async () => {
+    const url = new URL('/api/skill-market', 'http://localhost:3456')
+    const req = new Request(url, { method: 'DELETE' })
+
+    const res = await handleSkillMarketApi(req, url, ['api', 'skill-market'])
+
+    expect(res.status).toBe(405)
+  })
+
+  it('rejects install requests with target paths', async () => {
+    const url = new URL('/api/skill-market/install', 'http://localhost:3456')
+    const req = new Request(url, {
+      method: 'POST',
+      body: JSON.stringify({ source: 'clawhub', slug: 'skill-vetter', targetPath: '/tmp/escape' }),
+    })
+
+    const res = await handleSkillMarketApi(req, url, ['api', 'skill-market', 'install'])
+
+    expect(res.status).toBe(400)
+    await expect(res.json()).resolves.toMatchObject({ error: 'target_path_not_allowed' })
+  })
+
+  it('returns install skeleton response for safe install requests', async () => {
+    const url = new URL('/api/skill-market/install', 'http://localhost:3456')
+    const req = new Request(url, {
+      method: 'POST',
+      body: JSON.stringify({ source: 'clawhub', slug: 'skill-vetter' }),
+    })
+
+    const res = await handleSkillMarketApi(req, url, ['api', 'skill-market', 'install'])
+
+    expect(res.status).toBe(501)
+    await expect(res.json()).resolves.toMatchObject({ error: 'install_not_wired' })
+  })
+
+  it('rejects invalid install JSON', async () => {
+    const url = new URL('/api/skill-market/install', 'http://localhost:3456')
+    const req = new Request(url, {
+      method: 'POST',
+      body: '{not-json',
+    })
+
+    const res = await handleSkillMarketApi(req, url, ['api', 'skill-market', 'install'])
+
+    expect(res.status).toBe(400)
+    await expect(res.json()).resolves.toMatchObject({ error: 'invalid_json' })
+  })
+
+  it('routes skill market requests through the API router without network access', async () => {
+    mock.module('@whiskeysockets/baileys', () => ({
+      DisconnectReason: { loggedOut: 401 },
+      fetchLatestBaileysVersion: async () => ({ version: [2, 3000, 0] }),
+      makeCacheableSignalKeyStore: () => ({}),
+      makeWASocket: () => ({ ev: { on: () => {} }, ws: { on: () => {} } }),
+      useMultiFileAuthState: async () => ({
+        state: { creds: {}, keys: {} },
+        saveCreds: async () => {},
+      }),
+    }))
+    const { handleApiRequest } = await import('../router.js')
+    const url = new URL('/api/skill-market?source=unsupported', 'http://localhost:3456')
+
+    const res = await handleApiRequest(new Request(url, { method: 'GET' }), url)
+
+    expect(res.status).toBe(400)
+    await expect(res.json()).resolves.toMatchObject({ error: 'unsupported_source' })
+  })
+
+  it('lists through the service with validated query params', async () => {
+    let capturedParams: unknown
+    let hasInstalledProvider = false
+    setSkillMarketServiceFactoryForTests((options) => {
+      hasInstalledProvider = typeof options.installedSkillNames === 'function'
+      return {
+        list: async (params) => {
+          capturedParams = params
+          return {
+            items: [],
+            nextCursor: null,
+            source: 'skillhub',
+            sourceStatus: 'ok',
+          }
+        },
+        listSkills: async (params) => {
+          capturedParams = params
+          return {
+            items: [],
+            nextCursor: null,
+            source: 'skillhub',
+            sourceStatus: 'ok',
+          }
+        },
+      }
+    })
+    const url = new URL('/api/skill-market?source=skillhub&sort=updated&q=vetter&cursor=abc&limit=12', 'http://localhost:3456')
+    const req = new Request(url, { method: 'GET' })
+
+    const res = await handleSkillMarketApi(req, url, ['api', 'skill-market'])
+
+    expect(res.status).toBe(200)
+    expect(hasInstalledProvider).toBe(true)
+    expect(capturedParams).toEqual({
+      source: 'skillhub',
+      sort: 'updated',
+      query: 'vetter',
+      cursor: 'abc',
+      limit: 12,
+    })
   })
 })
