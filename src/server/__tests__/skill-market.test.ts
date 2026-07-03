@@ -184,7 +184,38 @@ describe('skill market source normalization', () => {
       slug: 'skill-vetter',
       trustState: 'benign',
       trustSummary: '安全，无风险',
+      installEligibility: { status: 'installable' },
     })
+  })
+
+  it('blocks SkillHub details when security reports are missing', () => {
+    const detail = normalizeSkillHubDetail({
+      skill: {
+        slug: 'unreviewed-skill',
+        displayName: 'Unreviewed Skill',
+      },
+    })
+
+    expect(detail.trustState).toBe('unknown')
+    expect(detail.installEligibility.status).toBe('blocked')
+    expect(detail.installEligibility.reason).toMatch(/security report is missing or inconclusive/i)
+  })
+
+  it('blocks SkillHub details when security reports are mixed or inconclusive', () => {
+    const detail = normalizeSkillHubDetail({
+      securityReports: {
+        community: { status: 'benign', statusText: 'safe' },
+        staticAnalysis: { status: 'pending-review', statusText: 'Scanner still reviewing.' },
+      },
+      skill: {
+        slug: 'mixed-report-skill',
+        displayName: 'Mixed Report Skill',
+      },
+    })
+
+    expect(detail.trustState).toBe('unknown')
+    expect(detail.installEligibility.status).toBe('blocked')
+    expect(detail.installEligibility.reason).toMatch(/security report is missing or inconclusive/i)
   })
 
   it('uses malicious SkillHub report summaries for blocked details', () => {

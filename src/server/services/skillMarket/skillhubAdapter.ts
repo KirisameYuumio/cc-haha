@@ -45,6 +45,13 @@ const ALLOWED_EXTERNAL_URL_HOSTS = new Set([
   'raw.githubusercontent.com',
 ])
 
+const SKILLHUB_DETAIL_INSTALLABLE_TRUST_STATES = new Set<SkillMarketTrustState>([
+  'clean',
+  'benign',
+  'signed',
+  'official',
+])
+
 function requiresApiKey(labels?: { requires_api_key?: string }) {
   return labels?.requires_api_key === 'true'
 }
@@ -91,6 +98,19 @@ function trustFromReports(reports?: Record<string, { status?: string; statusText
     return { trustState: 'benign', trustSummary: values.find((report) => report.statusText)?.statusText }
   }
   return { trustState: 'unknown', trustSummary: values.find((report) => report.statusText)?.statusText }
+}
+
+function installEligibilityFromTrustState(trustState: SkillMarketTrustState): SkillMarketDetail['installEligibility'] {
+  if (SKILLHUB_DETAIL_INSTALLABLE_TRUST_STATES.has(trustState)) {
+    return { status: 'installable' }
+  }
+  if (trustState === 'blocked') {
+    return { status: 'blocked', reason: 'SkillHub security report blocked this skill.' }
+  }
+  if (trustState === 'warning') {
+    return { status: 'blocked', reason: 'SkillHub security report returned warnings.' }
+  }
+  return { status: 'blocked', reason: 'SkillHub security report is missing or inconclusive.' }
 }
 
 export function normalizeSkillHubList(payload: SkillHubListResponse): SkillMarketListResult {
@@ -155,8 +175,6 @@ export function normalizeSkillHubDetail(payload: SkillHubDetailResponse): SkillM
     installed: false,
     files: [],
     riskLabels: requiresApiKey(skill.labels) ? ['requires-api-key'] : [],
-    installEligibility: trust.trustState === 'blocked'
-      ? { status: 'blocked', reason: 'SkillHub security report blocked this skill.' }
-      : { status: 'installable' },
+    installEligibility: installEligibilityFromTrustState(trust.trustState),
   }
 }
