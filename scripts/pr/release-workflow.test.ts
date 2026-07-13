@@ -518,6 +518,7 @@ describe('release desktop workflow', () => {
     expect(installerHook).toContain('Quit')
     expect(recoveryHelper).toContain('function Get-LegacyActiveSource')
     expect(recoveryHelper).toContain('function Get-PotentialInstallDirs')
+    expect(recoveryHelper).toContain('param([AllowEmptyString()][string[]]$InstallDirs)')
     expect(recoveryHelper).toContain('function Assert-NoUndiscoveredLegacySources')
     expect(recoveryHelper).toContain('function Assert-NoRunningApplication')
     expect(recoveryHelper).toContain('function Get-TreeManifest')

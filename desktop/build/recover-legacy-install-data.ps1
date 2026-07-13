@@ -293,7 +293,7 @@ function Get-ExistingInstallDirs {
 }
 
 function Get-PotentialInstallDirs {
-  param([string[]]$InstallDirs)
+  param([AllowEmptyString()][string[]]$InstallDirs)
 
   $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
   $result = New-Object 'System.Collections.Generic.List[string]'
@@ -805,7 +805,7 @@ function Run-SelfTest {
     New-Item -ItemType Directory -Path $perUserExternalTarget -Force | Out-Null
     New-Item -ItemType Junction -Path $perUserAppPayload -Target $perUserExternalTarget | Out-Null
     $perUserResult = Invoke-LegacyRecovery `
-      -InstallDirs @($perUserInstall) `
+      -InstallDirs @($perUserInstall) -SharedInstallDirs @('') `
       -UserDataDir (Join-Path $testRoot 'per-user app data') `
       -RecoveryRoot (Join-Path $testRoot 'per-user recovery') -ProcessName $ProcessName `
       -ActiveConfigDir '' -SkipProcessCheck
